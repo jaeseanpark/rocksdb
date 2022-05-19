@@ -196,6 +196,7 @@ Status BuildTable(
         ShouldReportDetailedTime(env, ioptions.stats),
         true /* internal key corruption is not ok */, range_del_agg.get(),
         blob_file_builder.get(), ioptions.allow_data_in_errors,
+        ioptions.enforce_single_del_contracts,
         /*compaction=*/nullptr, compaction_filter.get(),
         /*shutting_down=*/nullptr,
         /*manual_compaction_paused=*/nullptr,
@@ -335,6 +336,7 @@ Status BuildTable(
       // we will regrad this verification as user reads since the goal is
       // to cache it here for further user reads
       ReadOptions read_options;
+      read_options.rate_limiter_priority = Env::IO_USER;
       std::unique_ptr<InternalIterator> it(table_cache->NewIterator(
           read_options, file_options, tboptions.internal_comparator, *meta,
           nullptr /* range_del_agg */, mutable_cf_options.prefix_extractor,

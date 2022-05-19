@@ -1361,6 +1361,7 @@ Status DBImpl::CompactFilesImpl(
 
   assert(is_snapshot_supported_ || snapshots_.empty());
   CompactionJobStats compaction_job_stats;
+
   CompactionJob compaction_job(
       job_context->job_id, c.get(), immutable_db_options_, mutable_db_options_,
       file_options_for_compaction_, versions_.get(), &shutting_down_,
@@ -1394,6 +1395,7 @@ Status DBImpl::CompactFilesImpl(
   TEST_SYNC_POINT("CompactFilesImpl:3");
   mutex_.Lock();
 
+  //  컴팩션 끝나고 c->edit()을 정리하는 부분
   Status status = compaction_job.Install(*c->mutable_cf_options());
   if (status.ok()) {
     assert(compaction_job.io_status().ok());
@@ -3003,7 +3005,7 @@ void DBImpl::BackgroundCallCompaction(PrepickedCompaction* prepicked_compaction,
     // will cause trouble.
   }
 }
-
+//ANCHOR: BACKGROUND COMPACTION
 Status DBImpl::BackgroundCompaction(bool* made_progress,
                                     JobContext* job_context,
                                     LogBuffer* log_buffer,
@@ -3244,6 +3246,7 @@ Status DBImpl::BackgroundCompaction(bool* made_progress,
     *made_progress = true;
     TEST_SYNC_POINT_CALLBACK("DBImpl::BackgroundCompaction:AfterCompaction",
                              c->column_family_data());
+                             //ANCHOR: 
   } else if (!trivial_move_disallowed && c->IsTrivialMove()) {
     TEST_SYNC_POINT("DBImpl::BackgroundCompaction:TrivialMove");
     TEST_SYNC_POINT_CALLBACK("DBImpl::BackgroundCompaction:BeforeCompaction",
@@ -3355,6 +3358,7 @@ Status DBImpl::BackgroundCompaction(bool* made_progress,
     GetSnapshotContext(job_context, &snapshot_seqs,
                        &earliest_write_conflict_snapshot, &snapshot_checker);
     assert(is_snapshot_supported_ || snapshots_.empty());
+    //ANCHOR: COMPACTION JOB
     CompactionJob compaction_job(
         job_context->job_id, c.get(), immutable_db_options_,
         mutable_db_options_, file_options_for_compaction_, versions_.get(),
@@ -3381,7 +3385,7 @@ Status DBImpl::BackgroundCompaction(bool* made_progress,
     compaction_job.Run().PermitUncheckedError();
     TEST_SYNC_POINT("DBImpl::BackgroundCompaction:NonTrivial:AfterRun");
     mutex_.Lock();
-
+    //ANCHOR: compaction job.install
     status = compaction_job.Install(*c->mutable_cf_options());
     io_s = compaction_job.io_status();
     if (status.ok()) {

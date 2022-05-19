@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdint>
 #include <limits>
 #include <memory>
 #include <string>
@@ -560,7 +561,7 @@ Status BlockBasedTable::Open(
   Footer footer;
   std::unique_ptr<FilePrefetchBuffer> prefetch_buffer;
 
-  // Only retain read_options.deadline and read_options.io_timeout.
+  // From read_options, retain deadline, io_timeout, and rate_limiter_priority.
   // In future, we may retain more
   // options. Specifically, w ignore verify_checksums and default to
   // checksum verification anyway when creating the index and filter
@@ -568,6 +569,7 @@ Status BlockBasedTable::Open(
   ReadOptions ro;
   ro.deadline = read_options.deadline;
   ro.io_timeout = read_options.io_timeout;
+  ro.rate_limiter_priority = read_options.rate_limiter_priority;
 
   // prefetch both index and filters, down to all partitions
   const bool prefetch_all = prefetch_index_and_filter_in_cache || level == 0;
@@ -717,7 +719,10 @@ Status BlockBasedTable::Open(
         mem_usage, &(rep->table_reader_cache_res_handle));
     if (s.IsIncomplete()) {
       s = Status::MemoryLimit(
-          "Can't allocate BlockBasedTableReader due to memory limit based on "
+          "Can't allocate " +
+          kCacheEntryRoleToCamelString[static_cast<std::uint32_t>(
+              CacheEntryRole::kBlockBasedTableReader)] +
+          " due to memory limit based on "
           "cache capacity for memory allocation");
     }
   }
@@ -762,7 +767,8 @@ Status BlockBasedTable::PrefetchTail(
 
   // Try file system prefetch
   if (!file->use_direct_io() && !force_direct_prefetch) {
-    if (!file->Prefetch(prefetch_off, prefetch_len).IsNotSupported()) {
+    if (!file->Prefetch(prefetch_off, prefetch_len, ro.rate_limiter_priority)
+             .IsNotSupported()) {
       prefetch_buffer->reset(new FilePrefetchBuffer(
           0 /* readahead_size */, 0 /* max_readahead_size */,
           false /* enable */, true /* track_min_offset */));
@@ -774,6 +780,7 @@ Status BlockBasedTable::PrefetchTail(
   prefetch_buffer->reset(
       new FilePrefetchBuffer(0 /* readahead_size */, 0 /* max_readahead_size */,
                              true /* enable */, true /* track_min_offset */));
+
   IOOptions opts;
   Status s = file->PrepareIOOptions(ro, opts);
   if (s.ok()) {

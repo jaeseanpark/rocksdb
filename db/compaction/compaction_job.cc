@@ -1350,7 +1350,7 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
   ReadOptions read_options;
   read_options.verify_checksums = true;
   read_options.fill_cache = false;
-  read_options.rate_limiter_priority = Env::IO_LOW;
+  read_options.rate_limiter_priority = GetRateLimiterPriority();
   // Compaction iterators shouldn't be confined to a single prefix.
   // Compactions use Seek() for
   // (a) concurrent compactions,
@@ -1479,9 +1479,9 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
       snapshot_checker_, env_, ShouldReportDetailedTime(env_, stats_),
       /*expect_valid_internal_key=*/true, &range_del_agg,
       blob_file_builder.get(), db_options_.allow_data_in_errors,
-      sub_compact->compaction, compaction_filter, shutting_down_,
-      manual_compaction_paused_, manual_compaction_canceled_,
-      db_options_.info_log, full_history_ts_low));
+      db_options_.enforce_single_del_contracts, sub_compact->compaction,
+      compaction_filter, shutting_down_, manual_compaction_paused_,
+      manual_compaction_canceled_, db_options_.info_log, full_history_ts_low));
   auto c_iter = sub_compact->c_iter.get();
   c_iter->SeekToFirst();
   if (c_iter->Valid() && sub_compact->compaction->output_level() != 0) {
@@ -2285,7 +2285,7 @@ Status CompactionJob::OpenCompactionOutputFile(
         /*enable_hash=*/paranoid_file_checks_);
   }
 
-  writable_file->SetIOPriority(Env::IOPriority::IO_LOW);
+  writable_file->SetIOPriority(GetRateLimiterPriority());
   writable_file->SetWriteLifeTimeHint(write_hint_);
   FileTypeSet tmp_set = db_options_.checksum_handoff_file_types;
   writable_file->SetPreallocationBlockSize(static_cast<size_t>(
@@ -2474,6 +2474,19 @@ void CompactionJob::LogCompaction() {
 std::string CompactionJob::GetTableFileName(uint64_t file_number) {
   return TableFileName(compact_->compaction->immutable_options()->cf_paths,
                        file_number, compact_->compaction->output_path_id());
+}
+
+Env::IOPriority CompactionJob::GetRateLimiterPriority() {
+  if (versions_ && versions_->GetColumnFamilySet() &&
+      versions_->GetColumnFamilySet()->write_controller()) {
+    WriteController* write_controller =
+        versions_->GetColumnFamilySet()->write_controller();
+    if (write_controller->NeedsDelay() || write_controller->IsStopped()) {
+      return Env::IO_USER;
+    }
+  }
+
+  return Env::IO_LOW;
 }
 
 #ifndef ROCKSDB_LITE
