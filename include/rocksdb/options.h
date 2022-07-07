@@ -288,7 +288,7 @@ struct ColumnFamilyOptions : public AdvancedColumnFamilyOptions {
   // Dynamically changeable through SetOptions() API
   // ANCHOR: changed max_bytes_for_level_base to 100MB
   // DEFAULT: 256 * 1048576
-  uint64_t max_bytes_for_level_base = 100 * 1048576;
+  uint64_t max_bytes_for_level_base = 128 * 1048576;
 
   // Deprecated.
   uint64_t snap_refresh_nanos = 0;
