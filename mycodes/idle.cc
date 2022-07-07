@@ -24,7 +24,7 @@ using ROCKSDB_NAMESPACE::WriteOptions;
 #if defined(OS_WIN)
 std::string kDBPath = "C:\\Windows\\TEMP\\rocksdb_simple_example";
 #else
-std::string kDBPath = "/tmp/ycsb-rocksdb";
+std::string kDBPath = "/mnt/c/DB/ycsb-rocksdb";
 #endif
 
 int main() {
@@ -35,7 +35,7 @@ int main() {
   // options.IncreaseParallelism();
   // options.OptimizeLevelStyleCompaction();
   // create the DB if it's not already present
-  options.create_if_missing = true;
+  // options.create_if_missing = true;
 
   // open DB
   Status s = DB::Open(options, kDBPath, &db);

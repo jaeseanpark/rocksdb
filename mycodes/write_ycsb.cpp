@@ -30,16 +30,37 @@ std::string kDBPath = "/mnt/c/DB/ycsb-rocksdb";
 int main() {
   DB* db;
   Options options;
-  // Optimize RocksDB. This is the easiest way to get RocksDB to perform well
-  // options.IncreaseParallelism();
-  // options.OptimizeLevelStyleCompaction();
-  // create the DB if it's not already present
-  // options.create_if_missing = true;
-
+  // // options.create_if_missing = true;
   // open DB
   Status s = DB::Open(options, kDBPath, &db);
   assert(s.ok());
-  std::string value;
+  //ANCHOR
+  // std::string value;
+  // std::string randomval(1000, '0');
+  // // Optimize RocksDB. This is the easiest way to get RocksDB to perform well
+  // // options.IncreaseParallelism();
+  // // options.OptimizeLevelStyleCompaction();
+  // // create the DB if it's not already present
+  // std::ifstream ifile("updatelist.txt");
+  // std::string str;
+  // while(std::getline(ifile, str)){
+  //   //process string
+  //   //Put key-value
+  //   s = db->Put(WriteOptions(), str, randomval);
+  //   assert(s.ok());
+  // }
+  // ifile.close();
+
+  // ifile.open("updatelist.txt");
+  // while(std::getline(ifile, str)){
+  //   //process string
+  //   //get key-value
+  //   s = db->Get(ReadOptions(), str, &value);
+  //   assert(s.ok());
+  //   std::cout << value << std::endl;
+  // }
+  // ifile.close();
+  //ANCHOR
   //clock_t start, end;
   //start = clock();
 
@@ -111,15 +132,15 @@ int main() {
   // while(1){
   //   i++;
   // }
-  std::cout << "dbstats" << std::endl;
-  db->GetProperty("rocksdb.dbstats", &value);
-  std::cout << value << std::endl;
-  std::cout << "levelstats" << std::endl;
-  db->GetProperty("rocksdb.levelstats", &value);
-  std::cout << value << std::endl;
-  std::cout << "stats" << std::endl;
-  db->GetProperty("rocksdb.stats", &value);
-  std::cout << value << std::endl;
+  // std::cout << "dbstats" << std::endl;
+  // db->GetProperty("rocksdb.dbstats", &value);
+  // std::cout << value << std::endl;
+  // std::cout << "levelstats" << std::endl;
+  // db->GetProperty("rocksdb.levelstats", &value);
+  // std::cout << value << std::endl;
+  // std::cout << "stats" << std::endl;
+  // db->GetProperty("rocksdb.stats", &value);
+  // std::cout << value << std::endl;
   // }
   // std::map<std::string, std::string> mvalue;
   // db->GetMapProperty(DB::Properties::kBlockCacheEntryStats, &mvalue);
