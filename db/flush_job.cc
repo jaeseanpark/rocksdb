@@ -9,9 +9,8 @@
 
 #include "db/flush_job.h"
 
-#include <cinttypes>
-
 #include <algorithm>
+#include <cinttypes>
 #include <vector>
 
 #include "db/builder.h"
@@ -212,6 +211,13 @@ Status FlushJob::Run(LogsWithPrepTracker* prep_tracker, FileMetaData* file_meta,
   TEST_SYNC_POINT("FlushJob::Start");
   db_mutex_->AssertHeld();
   assert(pick_memtable_called);
+  // Mempurge threshold can be dynamically changed.
+  // For sake of consistency, mempurge_threshold is
+  // saved locally to maintain consistency in each
+  // FlushJob::Run call.
+  double mempurge_threshold =
+      mutable_cf_options_.experimental_mempurge_threshold;
+
   AutoThreadOperationStageUpdater stage_run(
       ThreadStatus::STAGE_FLUSH_RUN);
   if (mems_.empty()) {
@@ -239,9 +245,11 @@ Status FlushJob::Run(LogsWithPrepTracker* prep_tracker, FileMetaData* file_meta,
     prev_cpu_read_nanos = IOSTATS(cpu_read_nanos);
   }
   Status mempurge_s = Status::NotFound("No MemPurge.");
-  if ((db_options_.experimental_mempurge_threshold > 0.0) &&
+  if ((mempurge_threshold > 0.0) &&
       (cfd_->GetFlushReason() == FlushReason::kWriteBufferFull) &&
-      (!mems_.empty()) && MemPurgeDecider()) {
+      (!mems_.empty()) && MemPurgeDecider(mempurge_threshold) &&
+      !(db_options_.atomic_flush)) {
+    cfd_->SetMempurgeUsed();
     mempurge_s = MemPurge();
     if (!mempurge_s.ok()) {
       // Mempurge is typically aborted when the output
@@ -457,6 +465,7 @@ Status FlushJob::MemPurge() {
         snapshot_checker_);
     assert(job_context_);
     SequenceNumber job_snapshot_seq = job_context_->GetJobSnapshotSequence();
+    const std::atomic<bool> kManualCompactionCanceledFalse{false};
     CompactionIterator c_iter(
         iter.get(), (cfd_->internal_comparator()).user_comparator(), &merge,
         kMaxSequenceNumber, &existing_snapshots_,
@@ -465,10 +474,9 @@ Status FlushJob::MemPurge() {
         true /* internal key corruption is not ok */, range_del_agg.get(),
         nullptr, ioptions->allow_data_in_errors,
         ioptions->enforce_single_del_contracts,
+        /*manual_compaction_canceled=*/kManualCompactionCanceledFalse,
         /*compaction=*/nullptr, compaction_filter.get(),
-        /*shutting_down=*/nullptr,
-        /*manual_compaction_paused=*/nullptr,
-        /*manual_compaction_canceled=*/nullptr, ioptions->info_log,
+        /*shutting_down=*/nullptr, ioptions->info_log,
         &(cfd_->GetFullHistoryTsLow()));
 
     // Set earliest sequence number in the new memtable
@@ -629,8 +637,7 @@ Status FlushJob::MemPurge() {
   return s;
 }
 
-bool FlushJob::MemPurgeDecider() {
-  double threshold = db_options_.experimental_mempurge_threshold;
+bool FlushJob::MemPurgeDecider(double threshold) {
   // Never trigger mempurge if threshold is not a strictly positive value.
   if (!(threshold > 0.0)) {
     return false;
@@ -780,10 +787,11 @@ bool FlushJob::MemPurgeDecider() {
       estimated_useful_payload +=
           (mt->ApproximateMemoryUsage()) * (useful_payload * 1.0 / payload);
 
-      ROCKS_LOG_INFO(
-          db_options_.info_log,
-          "Mempurge sampling - found garbage ratio from sampling: %f.\n",
-          (payload - useful_payload) * 1.0 / payload);
+      ROCKS_LOG_INFO(db_options_.info_log,
+                     "Mempurge sampling [CF %s] - found garbage ratio from "
+                     "sampling: %f. Threshold is %f\n",
+                     cfd_->GetName().c_str(),
+                     (payload - useful_payload) * 1.0 / payload, threshold);
     } else {
       ROCKS_LOG_WARN(db_options_.info_log,
                      "Mempurge sampling: null payload measured, and collected "
@@ -952,14 +960,14 @@ Status FlushJob::WriteLevel0Table() {
       }
       LogFlush(db_options_.info_log);
     }
-    ROCKS_LOG_INFO(db_options_.info_log,
-                   "[%s] [JOB %d] Level-0 flush table #%" PRIu64 ": %" PRIu64
-                   " bytes %s"
-                   "%s",
-                   cfd_->GetName().c_str(), job_context_->job_id,
-                   meta_.fd.GetNumber(), meta_.fd.GetFileSize(),
-                   s.ToString().c_str(),
-                   meta_.marked_for_compaction ? " (needs compaction)" : "");
+    ROCKS_LOG_BUFFER(log_buffer_,
+                     "[%s] [JOB %d] Level-0 flush table #%" PRIu64 ": %" PRIu64
+                     " bytes %s"
+                     "%s",
+                     cfd_->GetName().c_str(), job_context_->job_id,
+                     meta_.fd.GetNumber(), meta_.fd.GetFileSize(),
+                     s.ToString().c_str(),
+                     meta_.marked_for_compaction ? " (needs compaction)" : "");
 
     if (s.ok() && output_file_directory_ != nullptr && sync_output_directory_) {
       s = output_file_directory_->FsyncWithDirOptions(
@@ -989,7 +997,7 @@ Status FlushJob::WriteLevel0Table() {
                    meta_.oldest_blob_file_number, meta_.oldest_ancester_time,
                    meta_.file_creation_time, meta_.file_checksum,
                    meta_.file_checksum_func_name, meta_.min_timestamp,
-                   meta_.max_timestamp);
+                   meta_.max_timestamp, meta_.unique_id);
 
     edit_->SetBlobFileAdditions(std::move(blob_file_additions));
   }

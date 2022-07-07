@@ -158,7 +158,7 @@ Status PartitionIndexReader::CacheDependencies(const ReadOptions& ro,
   std::unique_ptr<FilePrefetchBuffer> prefetch_buffer;
   rep->CreateFilePrefetchBuffer(0, 0, &prefetch_buffer,
                                 false /*Implicit auto readahead*/,
-                                false /*async_io*/);
+                                0 /*num_reads_*/);
   IOOptions opts;
   {
     Status s = rep->file->PrepareIOOptions(ro, opts);
@@ -187,7 +187,8 @@ Status PartitionIndexReader::CacheDependencies(const ReadOptions& ro,
     Status s = table()->MaybeReadBlockAndLoadToCache(
         prefetch_buffer.get(), ro, handle, UncompressionDict::GetEmptyDict(),
         /*wait=*/true, /*for_compaction=*/false, &block, BlockType::kIndex,
-        /*get_context=*/nullptr, &lookup_context, /*contents=*/nullptr);
+        /*get_context=*/nullptr, &lookup_context, /*contents=*/nullptr,
+        /*async_read=*/false);
 
     if (!s.ok()) {
       return s;

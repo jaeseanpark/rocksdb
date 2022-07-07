@@ -64,6 +64,7 @@
 #include "table/block_based/block_based_table_factory.h"
 #include "table/merging_iterator.h"
 #include "table/table_builder.h"
+#include "table/unique_id_impl.h"
 #include "test_util/sync_point.h"
 #include "util/coding.h"
 #include "util/hash.h"
@@ -190,7 +191,7 @@ struct CompactionJob::SubcompactionState {
   // The number of bytes overlapping between the current output and
   // grandparent files used in ShouldStopBefore().
   uint64_t overlapped_bytes = 0;
-  // A flag determine whether the key has been seen in ShouldStopBefore()
+  // A flag determines whether the key has been seen in ShouldStopBefore()
   bool seen_key = false;
   // sub compaction job id, which is used to identify different sub-compaction
   // within the same compaction job.
@@ -200,6 +201,12 @@ struct CompactionJob::SubcompactionState {
   // sub-compaction begin.
   bool notify_on_subcompaction_completion = false;
 
+  // A flag determines if this subcompaction has been split by the cursor
+  bool is_split = false;
+  // We also maintain the output split key for each subcompaction to avoid
+  // repetitive comparison in ShouldStopBefore()
+  const InternalKey* local_output_split_key = nullptr;
+
   SubcompactionState(Compaction* c, Slice* _start, Slice* _end, uint64_t size,
                      uint32_t _sub_job_id)
       : compaction(c),
@@ -208,6 +215,21 @@ struct CompactionJob::SubcompactionState {
         approx_size(size),
         sub_job_id(_sub_job_id) {
     assert(compaction != nullptr);
+    const InternalKeyComparator* icmp =
+        &compaction->column_family_data()->internal_comparator();
+    const InternalKey* output_split_key = compaction->GetOutputSplitKey();
+    // Invalid output_split_key indicates that we do not need to split
+    if (output_split_key != nullptr) {
+      // We may only split the output when the cursor is in the range. Split
+      if ((end == nullptr || icmp->user_comparator()->Compare(
+                                 ExtractUserKey(output_split_key->Encode()),
+                                 ExtractUserKey(*end)) < 0) &&
+          (start == nullptr || icmp->user_comparator()->Compare(
+                                   ExtractUserKey(output_split_key->Encode()),
+                                   ExtractUserKey(*start)) > 0)) {
+        local_output_split_key = output_split_key;
+      }
+    }
   }
 
   // Adds the key and value to the builder
@@ -233,6 +255,14 @@ struct CompactionJob::SubcompactionState {
         &compaction->column_family_data()->internal_comparator();
     const std::vector<FileMetaData*>& grandparents = compaction->grandparents();
 
+    // Invalid local_output_split_key indicates that we do not need to split
+    if (local_output_split_key != nullptr && !is_split) {
+      // Split occurs when the next key is larger than/equal to the cursor
+      if (icmp->Compare(internal_key, local_output_split_key->Encode()) >= 0) {
+        is_split = true;
+        return true;
+      }
+    }
     bool grandparant_file_switched = false;
     // Scan to find earliest grandparent file that contains key.
     while (grandparent_index < grandparents.size() &&
@@ -428,8 +458,7 @@ CompactionJob::CompactionJob(
     bool paranoid_file_checks, bool measure_io_stats, const std::string& dbname,
     CompactionJobStats* compaction_job_stats, Env::Priority thread_pri,
     const std::shared_ptr<IOTracer>& io_tracer,
-    const std::atomic<int>* manual_compaction_paused,
-    const std::atomic<bool>* manual_compaction_canceled,
+    const std::atomic<bool>& manual_compaction_canceled,
     const std::string& db_id, const std::string& db_session_id,
     std::string full_history_ts_low, std::string trim_ts,
     BlobFileCompletionCallback* blob_callback)
@@ -455,7 +484,6 @@ CompactionJob::CompactionJob(
           fs_->OptimizeForCompactionTableRead(file_options, db_options_)),
       versions_(versions),
       shutting_down_(shutting_down),
-      manual_compaction_paused_(manual_compaction_paused),
       manual_compaction_canceled_(manual_compaction_canceled),
       db_directory_(db_directory),
       blob_output_directory_(blob_output_directory),
@@ -1047,6 +1075,7 @@ CompactionJob::ProcessKeyValueCompactionWithCompactionService(
   const Compaction* compaction = sub_compact->compaction;
   CompactionServiceInput compaction_input;
   compaction_input.output_level = compaction->output_level();
+  compaction_input.db_id = db_id_;
 
   const std::vector<CompactionInputFiles>& inputs =
       *(compact_->compaction->inputs());
@@ -1208,6 +1237,7 @@ CompactionJob::ProcessKeyValueCompactionWithCompactionService(
     meta.oldest_ancester_time = file.oldest_ancester_time;
     meta.file_creation_time = file.file_creation_time;
     meta.marked_for_compaction = file.marked_for_compaction;
+    meta.unique_id = file.unique_id;
 
     auto cfd = compaction->column_family_data();
     sub_compact->outputs.emplace_back(std::move(meta),
@@ -1253,8 +1283,8 @@ void CompactionJob::NotifyOnSubcompactionBegin(
   if (shutting_down_->load(std::memory_order_acquire)) {
     return;
   }
-  if (c->is_manual_compaction() && manual_compaction_paused_ &&
-      manual_compaction_paused_->load(std::memory_order_acquire) > 0) {
+  if (c->is_manual_compaction() &&
+      manual_compaction_canceled_.load(std::memory_order_acquire)) {
     return;
   }
 
@@ -1451,7 +1481,9 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
   std::vector<std::string> blob_file_paths;
 
   std::unique_ptr<BlobFileBuilder> blob_file_builder(
-      mutable_cf_options->enable_blob_files
+      (mutable_cf_options->enable_blob_files &&
+       sub_compact->compaction->output_level() >=
+           mutable_cf_options->blob_file_starting_level)
           ? new BlobFileBuilder(
                 versions_, fs_.get(),
                 sub_compact->compaction->immutable_options(),
@@ -1465,7 +1497,7 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
   TEST_SYNC_POINT_CALLBACK(
       "CompactionJob::Run():PausingManualCompaction:1",
       reinterpret_cast<void*>(
-          const_cast<std::atomic<int>*>(manual_compaction_paused_)));
+          const_cast<std::atomic<bool>*>(&manual_compaction_canceled_)));
 
   Status status;
   const std::string* const full_history_ts_low =
@@ -1479,9 +1511,9 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
       snapshot_checker_, env_, ShouldReportDetailedTime(env_, stats_),
       /*expect_valid_internal_key=*/true, &range_del_agg,
       blob_file_builder.get(), db_options_.allow_data_in_errors,
-      db_options_.enforce_single_del_contracts, sub_compact->compaction,
-      compaction_filter, shutting_down_, manual_compaction_paused_,
-      manual_compaction_canceled_, db_options_.info_log, full_history_ts_low));
+      db_options_.enforce_single_del_contracts, manual_compaction_canceled_,
+      sub_compact->compaction, compaction_filter, shutting_down_,
+      db_options_.info_log, full_history_ts_low));
   auto c_iter = sub_compact->c_iter.get();
   c_iter->SeekToFirst();
   if (c_iter->Valid() && sub_compact->compaction->output_level() != 0) {
@@ -1563,7 +1595,7 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
     TEST_SYNC_POINT_CALLBACK(
         "CompactionJob::Run():PausingManualCompaction:2",
         reinterpret_cast<void*>(
-            const_cast<std::atomic<int>*>(manual_compaction_paused_)));
+            const_cast<std::atomic<bool>*>(&manual_compaction_canceled_)));
     if (partitioner.get()) {
       last_key_for_partitioner.assign(c_iter->user_key().data_,
                                       c_iter->user_key().size_);
@@ -1642,10 +1674,7 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
     status = Status::ShutdownInProgress("Database shutdown");
   }
   if ((status.ok() || status.IsColumnFamilyDropped()) &&
-      ((manual_compaction_paused_ &&
-        manual_compaction_paused_->load(std::memory_order_relaxed) > 0) ||
-       (manual_compaction_canceled_ &&
-        manual_compaction_canceled_->load(std::memory_order_relaxed)))) {
+      (manual_compaction_canceled_.load(std::memory_order_relaxed))) {
     status = Status::Incomplete(Status::SubCode::kManualCompactionPaused);
   }
   if (status.ok()) {
@@ -2112,11 +2141,11 @@ Status CompactionJob::InstallCompactionResults(
 
   {
     Compaction::InputLevelSummaryBuffer inputs_summary;
-    ROCKS_LOG_INFO(db_options_.info_log,
-                   "[%s] [JOB %d] Compacted %s => %" PRIu64 " bytes",
-                   compaction->column_family_data()->GetName().c_str(), job_id_,
-                   compaction->InputLevelSummary(&inputs_summary),
-                   compact_->total_bytes + compact_->total_blob_bytes);
+    ROCKS_LOG_BUFFER(log_buffer_,
+                     "[%s] [JOB %d] Compacted %s => %" PRIu64 " bytes",
+                     compaction->column_family_data()->GetName().c_str(),
+                     job_id_, compaction->InputLevelSummary(&inputs_summary),
+                     compact_->total_bytes + compact_->total_blob_bytes);
   }
 
   VersionEdit* const edit = compaction->edit();
@@ -2158,6 +2187,16 @@ Status CompactionJob::InstallCompactionResults(
 
     edit->AddBlobFileGarbage(blob_file_number, stats.GetCount(),
                              stats.GetBytes());
+  }
+
+  if (compaction->compaction_reason() == CompactionReason::kLevelMaxLevelSize &&
+      compaction->immutable_options()->compaction_pri == kRoundRobin) {
+    int start_level = compaction->start_level();
+    if (start_level > 0) {
+      auto vstorage = compaction->input_version()->storage_info();
+      edit->AddCompactCursor(start_level,
+                             vstorage->GetNextCompactCursor(start_level));
+    }
   }
 
   return versions_->LogAndApply(compaction->column_family_data(),
@@ -2277,6 +2316,18 @@ Status CompactionJob::OpenCompactionOutputFile(
     meta.oldest_ancester_time = oldest_ancester_time;
     meta.file_creation_time = current_time;
     meta.temperature = temperature;
+    assert(!db_id_.empty());
+    assert(!db_session_id_.empty());
+    s = GetSstInternalUniqueId(db_id_, db_session_id_, meta.fd.GetNumber(),
+                               &meta.unique_id);
+    if (!s.ok()) {
+      ROCKS_LOG_ERROR(db_options_.info_log,
+                      "[%s] [JOB %d] file #%" PRIu64
+                      " failed to generate unique id: %s.",
+                      cfd->GetName().c_str(), job_id_, meta.fd.GetNumber(),
+                      s.ToString().c_str());
+      return s;
+    }
     sub_compact->outputs.emplace_back(
         std::move(meta), cfd->internal_comparator(),
         /*enable_order_check=*/
@@ -2510,7 +2561,7 @@ CompactionServiceCompactionJob::CompactionServiceCompactionJob(
     std::vector<SequenceNumber> existing_snapshots,
     std::shared_ptr<Cache> table_cache, EventLogger* event_logger,
     const std::string& dbname, const std::shared_ptr<IOTracer>& io_tracer,
-    const std::atomic<bool>* manual_compaction_canceled,
+    const std::atomic<bool>& manual_compaction_canceled,
     const std::string& db_id, const std::string& db_session_id,
     const std::string& output_path,
     const CompactionServiceInput& compaction_service_input,
@@ -2523,7 +2574,7 @@ CompactionServiceCompactionJob::CompactionServiceCompactionJob(
           compaction->mutable_cf_options()->paranoid_file_checks,
           compaction->mutable_cf_options()->report_bg_io_stats, dbname,
           &(compaction_service_result->stats), Env::Priority::USER, io_tracer,
-          nullptr, manual_compaction_canceled, db_id, db_session_id,
+          manual_compaction_canceled, db_id, db_session_id,
           compaction->column_family_data()->GetFullHistoryTsLow()),
       output_path_(output_path),
       compaction_input_(compaction_service_input),
@@ -2609,7 +2660,7 @@ Status CompactionServiceCompactionJob::Run() {
         meta.fd.largest_seqno, meta.smallest.Encode().ToString(),
         meta.largest.Encode().ToString(), meta.oldest_ancester_time,
         meta.file_creation_time, output_file.validator.GetHash(),
-        meta.marked_for_compaction);
+        meta.marked_for_compaction, meta.unique_id);
   }
   compaction_result_->num_output_records = sub_compact->num_output_records;
   compaction_result_->total_bytes = sub_compact->total_bytes;
@@ -2713,6 +2764,9 @@ static std::unordered_map<std::string, OptionTypeInfo> cs_input_type_info = {
     {"output_level",
      {offsetof(struct CompactionServiceInput, output_level), OptionType::kInt,
       OptionVerificationType::kNormal, OptionTypeFlags::kNone}},
+    {"db_id",
+     {offsetof(struct CompactionServiceInput, db_id),
+      OptionType::kEncodedString}},
     {"has_begin",
      {offsetof(struct CompactionServiceInput, has_begin), OptionType::kBoolean,
       OptionVerificationType::kNormal, OptionTypeFlags::kNone}},
@@ -2770,6 +2824,11 @@ static std::unordered_map<std::string, OptionTypeInfo>
          {offsetof(struct CompactionServiceOutputFile, marked_for_compaction),
           OptionType::kBoolean, OptionVerificationType::kNormal,
           OptionTypeFlags::kNone}},
+        {"unique_id",
+         OptionTypeInfo::Array<uint64_t, 2>(
+             offsetof(struct CompactionServiceOutputFile, unique_id),
+             OptionVerificationType::kNormal, OptionTypeFlags::kNone,
+             {0, OptionType::kUInt64T})},
 };
 
 static std::unordered_map<std::string, OptionTypeInfo>

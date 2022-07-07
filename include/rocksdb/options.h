@@ -240,18 +240,36 @@ struct ColumnFamilyOptions : public AdvancedColumnFamilyOptions {
   // Dynamically changeable through SetOptions() API
   int level0_file_num_compaction_trigger = 4;
 
-  // If non-nullptr, use the specified function to determine the
-  // prefixes for keys.  These prefixes will be placed in the filter.
-  // Depending on the workload, this can reduce the number of read-IOP
-  // cost for scans when a prefix is passed via ReadOptions to
-  // db.NewIterator().  For prefix filtering to work properly,
-  // "prefix_extractor" and "comparator" must be such that the following
-  // properties hold:
+  // If non-nullptr, use the specified function to put keys in contiguous
+  // groups called "prefixes". These prefixes are used to place one
+  // representative entry for the group into the Bloom filter
+  // rather than an entry for each key (see whole_key_filtering).
+  // Under certain conditions, this enables optimizing some range queries
+  // (Iterators) in addition to some point lookups (Get/MultiGet).
   //
-  // 1) key.starts_with(prefix(key))
-  // 2) Compare(prefix(key), key) <= 0.
-  // 3) If Compare(k1, k2) <= 0, then Compare(prefix(k1), prefix(k2)) <= 0
-  // 4) prefix(prefix(key)) == prefix(key)
+  // Together `prefix_extractor` and `comparator` must satisfy one essential
+  // property for valid prefix filtering of range queries:
+  //   If Compare(k1, k2) <= 0 and Compare(k2, k3) <= 0 and
+  //      InDomain(k1) and InDomain(k3) and prefix(k1) == prefix(k3),
+  //   Then InDomain(k2) and prefix(k2) == prefix(k1)
+  //
+  // In other words, all keys with the same prefix must be in a contiguous
+  // group by comparator order, and cannot be interrupted by keys with no
+  // prefix ("out of domain"). (This makes it valid to conclude that no
+  // entries within some bounds are present if the upper and lower bounds
+  // have a common prefix and no entries with that same prefix are present.)
+  //
+  // Some other properties are recommended but not strictly required. Under
+  // most sensible comparators, the following will need to hold true to
+  // satisfy the essential property above:
+  // * "Prefix is a prefix": key.starts_with(prefix(key))
+  // * "Prefixes preserve ordering": If Compare(k1, k2) <= 0, then
+  //   Compare(prefix(k1), prefix(k2)) <= 0
+  //
+  // The next two properties ensure that seeking to a prefix allows
+  // enumerating all entries with that prefix:
+  // * "Prefix starts the group": Compare(prefix(key), key) <= 0
+  // * "Prefix idempotent": prefix(prefix(key)) == prefix(key)
   //
   // Default: nullptr
   std::shared_ptr<const SliceTransform> prefix_extractor = nullptr;
@@ -493,6 +511,23 @@ struct DBOptions {
   //
   // Default: false
   bool track_and_verify_wals_in_manifest = false;
+
+  // EXPERIMENTAL: This API/behavior is subject to change
+  // If true, during DB-open it verifies the SST unique id between MANIFEST
+  // and SST properties, which is to make sure the SST is not overwritten or
+  // misplaced. A corruption error will be reported if mismatch detected, but
+  // only when MANIFEST tracks the unique id, which starts from version 7.3.
+  // The unique id is an internal unique id and subject to change.
+  //
+  // Note:
+  // 1. if enabled, it opens every SST files during DB open to read the unique
+  //    id from SST properties, so it's recommended to have `max_open_files=-1`
+  //    to pre-open the SST files before the verification.
+  // 2. existing SST files won't have its unique_id tracked in MANIFEST, then
+  //    verification will be skipped.
+  //
+  // Default: false
+  bool verify_sst_unique_id_in_manifest = false;
 
   // Use the specified object to interact with the environment,
   // e.g. to read/write files, schedule background work, etc. In the near
@@ -849,23 +884,6 @@ struct DBOptions {
   // access pattern is random, when a sst file is opened.
   // Default: true
   bool advise_random_on_open = true;
-
-  // [experimental]
-  // Used to activate or deactive the Mempurge feature (memtable garbage
-  // collection). (deactivated by default). At every flush, the total useful
-  // payload (total entries minus garbage entries) is estimated as a ratio
-  // [useful payload bytes]/[size of a memtable (in bytes)]. This ratio is then
-  // compared to this `threshold` value:
-  //     - if ratio<threshold: the flush is replaced by a mempurge operation
-  //     - else: a regular flush operation takes place.
-  // Threshold values:
-  //   0.0: mempurge deactivated (default).
-  //   1.0: recommended threshold value.
-  //   >1.0 : aggressive mempurge.
-  //   0 < threshold < 1.0: mempurge triggered only for very low useful payload
-  //   ratios.
-  // [experimental]
-  double experimental_mempurge_threshold = 0.0;
 
   // Amount of data to build up in memtables across all column
   // families before writing to disk.
@@ -1259,13 +1277,30 @@ struct DBOptions {
   // Default: nullptr
   std::shared_ptr<FileChecksumGenFactory> file_checksum_gen_factory = nullptr;
 
-  // By default, RocksDB recovery fails if any table file referenced in
-  // MANIFEST are missing after scanning the MANIFEST.
-  // Best-efforts recovery is another recovery mode that
-  // tries to restore the database to the most recent point in time without
-  // missing file.
-  // Currently not compatible with atomic flush. Furthermore, WAL files will
+  // By default, RocksDB recovery fails if any table/blob file referenced in
+  // MANIFEST are missing after scanning the MANIFEST pointed to by the
+  // CURRENT file.
+  // Best-efforts recovery is another recovery mode that tolerates missing or
+  // corrupted table or blob files.
+  // Best-efforts recovery does not need a valid CURRENT file, and tries to
+  // recover the database using one of the available MANIFEST files in the db
+  // directory.
+  // Best-efforts recovery recovers database to a state in which the database
+  // includes only table and blob files whose actual sizes match the
+  // information in the chosen MANIFEST without holes in the history.
+  // Best-efforts recovery tries the available MANIFEST files from high file
+  // numbers (newer) to low file numbers (older), and stops after finding the
+  // first MANIFEST file from which the db can be recovered to a state without
+  // invalid (missing/file-mismatch) table and blob files.
+  // It is possible that the database can be restored to an empty state with no
+  // table or blob files.
+  // Regardless of this option, the IDENTITY file is updated if needed during
+  // recovery to match the DB ID in the MANIFEST (if previously using
+  // write_dbid_to_manifest) or to be in some valid state (non-empty DB ID).
+  // Currently, not compatible with atomic flush. Furthermore, WAL files will
   // not be used for recovery if best_efforts_recovery is true.
+  // Also requires either 1) LOCK file exists or 2) underlying env's LockFile()
+  // call returns ok even for non-existing LOCK file.
   // Default: false
   bool best_efforts_recovery = false;
 
@@ -1397,7 +1432,6 @@ struct Options : public DBOptions, public ColumnFamilyOptions {
   Options* DisableExtraChecks();
 };
 
-//
 // An application can issue a read request (via Get/Iterators) and specify
 // if that read should process data that ALREADY resides on a specified cache
 // level. For example, if an application specifies kBlockCacheTier then the
@@ -1515,6 +1549,17 @@ struct ReadOptions {
   // from total_order_seek, based on seek key, and iterator upper bound.
   // Not supported in ROCKSDB_LITE mode, in the way that even with value true
   // prefix mode is not used.
+  // BUG: Using Comparator::IsSameLengthImmediateSuccessor and
+  // SliceTransform::FullLengthEnabled to enable prefix mode in cases where
+  // prefix of upper bound differs from prefix of seek key has a flaw.
+  // If present in the DB, "short keys" (shorter than "full length" prefix)
+  // can be omitted from auto_prefix_mode iteration when they would be present
+  // in total_order_seek iteration, regardless of whether the short keys are
+  // "in domain" of the prefix extractor. This is not an issue if no short
+  // keys are added to DB or are not expected to be returned by such
+  // iterators. (We are also assuming the new condition on
+  // IsSameLengthImmediateSuccessor is satisfied; see its BUG section).
+  // A bug example is in DBTest2::AutoPrefixMode1, search for "BUG".
   // Default: false
   bool auto_prefix_mode;
 
@@ -1616,10 +1661,6 @@ struct ReadOptions {
   // is a `PlainTableFactory`) and cuckoo tables (these can exist when
   // `ColumnFamilyOptions::table_factory` is a `CuckooTableFactory`).
   //
-  // The new `DB::MultiGet()` APIs (i.e., the ones returning `void`) will return
-  // `Status::NotSupported` when that operation requires file read(s) and
-  // `rate_limiter_priority != Env::IO_TOTAL`.
-  //
   // The bytes charged to rate limiter may not exactly match the file read bytes
   // since there are some seemingly insignificant reads, like for file
   // headers/footers, that we currently do not charge to rate limiter.
@@ -1712,6 +1753,13 @@ struct WriteOptions {
   // Default: `Env::IO_TOTAL`
   Env::IOPriority rate_limiter_priority;
 
+  // `protection_bytes_per_key` is the number of bytes used to store
+  // protection information for each key entry. Currently supported values are
+  // zero (disabled) and eight.
+  //
+  // Default: zero (disabled).
+  size_t protection_bytes_per_key;
+
   WriteOptions()
       : sync(false),
         disableWAL(false),
@@ -1719,7 +1767,8 @@ struct WriteOptions {
         no_slowdown(false),
         low_pri(false),
         memtable_insert_hint_per_batch(false),
-        rate_limiter_priority(Env::IO_TOTAL) {}
+        rate_limiter_priority(Env::IO_TOTAL),
+        protection_bytes_per_key(0) {}
 };
 
 // Options that control flush operations
@@ -1776,6 +1825,17 @@ enum class BottommostLevelCompaction {
   kForceOptimized,
 };
 
+// For manual compaction, we can configure if we want to skip/force garbage
+// collection of blob files.
+enum class BlobGarbageCollectionPolicy {
+  // Force blob file garbage collection.
+  kForce,
+  // Skip blob file garbage collection.
+  kDisable,
+  // Inherit blob file garbage collection policy from ColumnFamilyOptions.
+  kUseDefault,
+};
+
 // CompactRangeOptions is used by CompactRange() call.
 struct CompactRangeOptions {
   // If true, no other compaction will run at the same time as this
@@ -1808,6 +1868,26 @@ struct CompactRangeOptions {
   // Cancellation can be delayed waiting on automatic compactions when used
   // together with `exclusive_manual_compaction == true`.
   std::atomic<bool>* canceled = nullptr;
+  // NOTE: Calling DisableManualCompaction() overwrites the uer-provided
+  // canceled variable in CompactRangeOptions.
+  // Typically, when CompactRange is being called in one thread (t1) with
+  // canceled = false, and DisableManualCompaction is being called in the
+  // other thread (t2), manual compaction is disabled normally, even if the
+  // compaction iterator may still scan a few items before *canceled is
+  // set to true
+
+  // If set to kForce, RocksDB will override enable_blob_file_garbage_collection
+  // to true; if set to kDisable, RocksDB will override it to false, and
+  // kUseDefault leaves the setting in effect. This enables customers to both
+  // force-enable and force-disable GC when calling CompactRange.
+  BlobGarbageCollectionPolicy blob_garbage_collection_policy =
+      BlobGarbageCollectionPolicy::kUseDefault;
+
+  // If set to < 0 or > 1, RocksDB leaves blob_garbage_collection_age_cutoff
+  // from ColumnFamilyOptions in effect. Otherwise, it will override the
+  // user-provided setting. This enables customers to selectively override the
+  // age cutoff.
+  double blob_garbage_collection_age_cutoff = -1;
 };
 
 // IngestExternalFileOptions is used by IngestExternalFile()

@@ -410,7 +410,7 @@ IOStatus WinFileSystem::OpenWritableFile(
   if (INVALID_HANDLE_VALUE == hFile) {
     auto lastError = GetLastError();
     return IOErrorFromWindowsError(
-        "Failed to create a NewWriteableFile: " + fname, lastError);
+        "Failed to create a NewWritableFile: " + fname, lastError);
   }
 
   // We will start writing at the end, appending
@@ -601,7 +601,7 @@ IOStatus WinFileSystem::NewDirectory(const std::string& name,
     return s;
   }
 
-  result->reset(new WinDirectory(handle));
+  result->reset(new WinDirectory(name, handle));
 
   return s;
 }

@@ -684,6 +684,18 @@ public class ColumnFamilyOptions extends RocksObject
   }
 
   @Override
+  public ColumnFamilyOptions setExperimentalMempurgeThreshold(
+      final double experimentalMempurgeThreshold) {
+    setExperimentalMempurgeThreshold(nativeHandle_, experimentalMempurgeThreshold);
+    return this;
+  }
+
+  @Override
+  public double experimentalMempurgeThreshold() {
+    return experimentalMempurgeThreshold(nativeHandle_);
+  }
+
+  @Override
   public ColumnFamilyOptions setMemtableWholeKeyFiltering(final boolean memtableWholeKeyFiltering) {
     setMemtableWholeKeyFiltering(nativeHandle_, memtableWholeKeyFiltering);
     return this;
@@ -1238,6 +1250,36 @@ public class ColumnFamilyOptions extends RocksObject
     return blobCompactionReadaheadSize(nativeHandle_);
   }
 
+  /**
+   * Set a certain LSM tree level to enable blob files.
+   *
+   * Default: 0
+   *
+   * Dynamically changeable through
+   * {@link RocksDB#setOptions(ColumnFamilyHandle, MutableColumnFamilyOptions)}.
+   *
+   * @param blobFileStartingLevel the starting level to enable blob files
+   *
+   * @return the reference to the current options.
+   */
+  @Override
+  public ColumnFamilyOptions setBlobFileStartingLevel(final int blobFileStartingLevel) {
+    setBlobFileStartingLevel(nativeHandle_, blobFileStartingLevel);
+    return this;
+  }
+
+  /**
+   * Get the starting LSM tree level to enable blob files.
+   *
+   * Default: 0
+   *
+   * @return the current LSM tree level to enable blob files.
+   */
+  @Override
+  public int blobFileStartingLevel() {
+    return blobFileStartingLevel(nativeHandle_);
+  }
+
   //
   // END options for blobs (integrated BlobDB)
   //
@@ -1359,6 +1401,9 @@ public class ColumnFamilyOptions extends RocksObject
   private native void setMemtablePrefixBloomSizeRatio(
       long handle, double memtablePrefixBloomSizeRatio);
   private native double memtablePrefixBloomSizeRatio(long handle);
+  private native void setExperimentalMempurgeThreshold(
+      long handle, double experimentalMempurgeThreshold);
+  private native double experimentalMempurgeThreshold(long handle);
   private native void setMemtableWholeKeyFiltering(long handle, boolean memtableWholeKeyFiltering);
   private native boolean memtableWholeKeyFiltering(long handle);
   private native void setBloomLocality(
@@ -1440,6 +1485,9 @@ public class ColumnFamilyOptions extends RocksObject
   private native void setBlobCompactionReadaheadSize(
       final long nativeHandle_, final long blobCompactionReadaheadSize);
   private native long blobCompactionReadaheadSize(final long nativeHandle_);
+  private native void setBlobFileStartingLevel(
+      final long nativeHandle_, final int blobFileStartingLevel);
+  private native int blobFileStartingLevel(final long nativeHandle_);
 
   // instance variables
   // NOTE: If you add new member variables, please update the copy constructor above!

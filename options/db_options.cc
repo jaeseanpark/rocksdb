@@ -208,8 +208,7 @@ static std::unordered_map<std::string, OptionTypeInfo>
          {0, OptionType::kString, OptionVerificationType::kDeprecated,
           OptionTypeFlags::kNone}},
         {"experimental_mempurge_threshold",
-         {offsetof(struct ImmutableDBOptions, experimental_mempurge_threshold),
-          OptionType::kDouble, OptionVerificationType::kNormal,
+         {0, OptionType::kDouble, OptionVerificationType::kDeprecated,
           OptionTypeFlags::kNone}},
         {"is_fd_close_on_exec",
          {offsetof(struct ImmutableDBOptions, is_fd_close_on_exec),
@@ -226,6 +225,10 @@ static std::unordered_map<std::string, OptionTypeInfo>
         {"track_and_verify_wals_in_manifest",
          {offsetof(struct ImmutableDBOptions,
                    track_and_verify_wals_in_manifest),
+          OptionType::kBoolean, OptionVerificationType::kNormal,
+          OptionTypeFlags::kNone}},
+        {"verify_sst_unique_id_in_manifest",
+         {offsetof(struct ImmutableDBOptions, verify_sst_unique_id_in_manifest),
           OptionType::kBoolean, OptionVerificationType::kNormal,
           OptionTypeFlags::kNone}},
         {"skip_log_error_on_recovery",
@@ -680,6 +683,8 @@ ImmutableDBOptions::ImmutableDBOptions(const DBOptions& options)
       flush_verify_memtable_count(options.flush_verify_memtable_count),
       track_and_verify_wals_in_manifest(
           options.track_and_verify_wals_in_manifest),
+      verify_sst_unique_id_in_manifest(
+          options.verify_sst_unique_id_in_manifest),
       env(options.env),
       rate_limiter(options.rate_limiter),
       sst_file_manager(options.sst_file_manager),
@@ -710,7 +715,6 @@ ImmutableDBOptions::ImmutableDBOptions(const DBOptions& options)
       allow_fallocate(options.allow_fallocate),
       is_fd_close_on_exec(options.is_fd_close_on_exec),
       advise_random_on_open(options.advise_random_on_open),
-      experimental_mempurge_threshold(options.experimental_mempurge_threshold),
       db_write_buffer_size(options.db_write_buffer_size),
       write_buffer_manager(options.write_buffer_manager),
       access_hint_on_compaction_start(options.access_hint_on_compaction_start),
@@ -775,6 +779,8 @@ void ImmutableDBOptions::Dump(Logger* log) const {
                    "                              "
                    "Options.track_and_verify_wals_in_manifest: %d",
                    track_and_verify_wals_in_manifest);
+  ROCKS_LOG_HEADER(log, "       Options.verify_sst_unique_id_in_manifest: %d",
+                   verify_sst_unique_id_in_manifest);
   ROCKS_LOG_HEADER(log, "                                    Options.env: %p",
                    env);
   ROCKS_LOG_HEADER(log, "                                     Options.fs: %s",
@@ -839,9 +845,6 @@ void ImmutableDBOptions::Dump(Logger* log) const {
                    is_fd_close_on_exec);
   ROCKS_LOG_HEADER(log, "                  Options.advise_random_on_open: %d",
                    advise_random_on_open);
-  ROCKS_LOG_HEADER(
-      log, "                  Options.experimental_mempurge_threshold: %f",
-      experimental_mempurge_threshold);
   ROCKS_LOG_HEADER(
       log, "                   Options.db_write_buffer_size: %" ROCKSDB_PRIszt,
       db_write_buffer_size);

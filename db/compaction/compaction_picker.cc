@@ -543,6 +543,10 @@ bool CompactionPicker::SetupOtherInputs(
                      output_level_inputs_size);
       inputs->files = expanded_inputs.files;
     }
+  } else {
+    // Likely to be trivial move. Expand files if they are still trivial moves,
+    // but limit to mutable_cf_options.max_compaction_bytes or 8 files so that
+    // we don't create too much compaction pressure for the next level.
   }
   return true;
 }
@@ -640,7 +644,12 @@ Compaction* CompactionPicker::CompactRange(
         GetCompressionType(vstorage, mutable_cf_options, output_level, 1),
         GetCompressionOptions(mutable_cf_options, vstorage, output_level),
         Temperature::kUnknown, compact_range_options.max_subcompactions,
-        /* grandparents */ {}, /* is manual */ true, trim_ts);
+        /* grandparents */ {}, /* is manual */ true, trim_ts, /* score */ -1,
+        /* deletion_compaction */ false, /* l0_files_might_overlap */ true,
+        CompactionReason::kUnknown,
+        compact_range_options.blob_garbage_collection_policy,
+        compact_range_options.blob_garbage_collection_age_cutoff);
+
     RegisterCompaction(c);
     vstorage->ComputeCompactionScore(ioptions_, mutable_cf_options);
     return c;
@@ -818,8 +827,11 @@ Compaction* CompactionPicker::CompactRange(
                          vstorage->base_level()),
       GetCompressionOptions(mutable_cf_options, vstorage, output_level),
       Temperature::kUnknown, compact_range_options.max_subcompactions,
-      std::move(grandparents),
-      /* is manual compaction */ true, trim_ts);
+      std::move(grandparents), /* is manual */ true, trim_ts, /* score */ -1,
+      /* deletion_compaction */ false, /* l0_files_might_overlap */ true,
+      CompactionReason::kUnknown,
+      compact_range_options.blob_garbage_collection_policy,
+      compact_range_options.blob_garbage_collection_age_cutoff);
 
   TEST_SYNC_POINT_CALLBACK("CompactionPicker::CompactRange:Return", compaction);
   RegisterCompaction(compaction);

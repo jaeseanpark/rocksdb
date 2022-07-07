@@ -876,7 +876,7 @@ class WritableFile {
   virtual ~WritableFile();
 
   // Append data to the end of the file
-  // Note: A WriteableFile object must support either Append or
+  // Note: A WritableFile object must support either Append or
   // PositionedAppend, so the users cannot mix the two.
   virtual Status Append(const Slice& data) = 0;
 
@@ -1148,6 +1148,8 @@ class Directory {
   virtual ~Directory() {}
   // Fsync directory. Can be called concurrently from multiple threads.
   virtual Status Fsync() = 0;
+  // Close directory.
+  virtual Status Close() { return Status::NotSupported("Close"); }
 
   virtual size_t GetUniqueId(char* /*id*/, size_t /*max_size*/) const {
     return 0;
@@ -1810,6 +1812,7 @@ class DirectoryWrapper : public Directory {
   explicit DirectoryWrapper(Directory* target) : target_(target) {}
 
   Status Fsync() override { return target_->Fsync(); }
+  Status Close() override { return target_->Close(); }
   size_t GetUniqueId(char* id, size_t max_size) const override {
     return target_->GetUniqueId(id, max_size);
   }

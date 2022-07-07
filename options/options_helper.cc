@@ -70,6 +70,8 @@ DBOptions BuildDBOptions(const ImmutableDBOptions& immutable_db_options,
       immutable_db_options.flush_verify_memtable_count;
   options.track_and_verify_wals_in_manifest =
       immutable_db_options.track_and_verify_wals_in_manifest;
+  options.verify_sst_unique_id_in_manifest =
+      immutable_db_options.verify_sst_unique_id_in_manifest;
   options.env = immutable_db_options.env;
   options.rate_limiter = immutable_db_options.rate_limiter;
   options.sst_file_manager = immutable_db_options.sst_file_manager;
@@ -182,6 +184,8 @@ DBOptions BuildDBOptions(const ImmutableDBOptions& immutable_db_options,
   options.checksum_handoff_file_types =
       immutable_db_options.checksum_handoff_file_types;
   options.lowest_used_cache_tier = immutable_db_options.lowest_used_cache_tier;
+  options.enforce_single_del_contracts =
+      immutable_db_options.enforce_single_del_contracts;
   return options;
 }
 
@@ -208,6 +212,8 @@ void UpdateColumnFamilyOptions(const MutableCFOptions& moptions,
   cf_opts->max_successive_merges = moptions.max_successive_merges;
   cf_opts->inplace_update_num_locks = moptions.inplace_update_num_locks;
   cf_opts->prefix_extractor = moptions.prefix_extractor;
+  cf_opts->experimental_mempurge_threshold =
+      moptions.experimental_mempurge_threshold;
 
   // Compaction related options
   cf_opts->disable_auto_compactions = moptions.disable_auto_compactions;
@@ -250,6 +256,7 @@ void UpdateColumnFamilyOptions(const MutableCFOptions& moptions,
       moptions.blob_garbage_collection_force_threshold;
   cf_opts->blob_compaction_readahead_size =
       moptions.blob_compaction_readahead_size;
+  cf_opts->blob_file_starting_level = moptions.blob_file_starting_level;
 
   // Misc options
   cf_opts->max_sequential_skip_in_iterations =
@@ -298,6 +305,7 @@ void UpdateColumnFamilyOptions(const ImmutableCFOptions& ioptions,
   cf_opts->cf_paths = ioptions.cf_paths;
   cf_opts->compaction_thread_limiter = ioptions.compaction_thread_limiter;
   cf_opts->sst_partitioner_factory = ioptions.sst_partitioner_factory;
+  cf_opts->blob_cache = ioptions.blob_cache;
 
   // TODO(yhchiang): find some way to handle the following derived options
   // * max_file_size
@@ -314,7 +322,8 @@ std::map<CompactionPri, std::string> OptionsHelper::compaction_pri_to_string = {
     {kByCompensatedSize, "kByCompensatedSize"},
     {kOldestLargestSeqFirst, "kOldestLargestSeqFirst"},
     {kOldestSmallestSeqFirst, "kOldestSmallestSeqFirst"},
-    {kMinOverlappingRatio, "kMinOverlappingRatio"}};
+    {kMinOverlappingRatio, "kMinOverlappingRatio"},
+    {kRoundRobin, "kRoundRobin"}};
 
 std::map<CompactionStopStyle, std::string>
     OptionsHelper::compaction_stop_style_to_string = {
@@ -824,7 +833,8 @@ std::unordered_map<std::string, CompactionPri>
         {"kByCompensatedSize", kByCompensatedSize},
         {"kOldestLargestSeqFirst", kOldestLargestSeqFirst},
         {"kOldestSmallestSeqFirst", kOldestSmallestSeqFirst},
-        {"kMinOverlappingRatio", kMinOverlappingRatio}};
+        {"kMinOverlappingRatio", kMinOverlappingRatio},
+        {"kRoundRobin", kRoundRobin}};
 
 std::unordered_map<std::string, CompactionStopStyle>
     OptionsHelper::compaction_stop_style_string_map = {

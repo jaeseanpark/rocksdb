@@ -81,7 +81,11 @@ class Compaction {
              std::vector<FileMetaData*> grandparents,
              bool manual_compaction = false, const std::string& trim_ts = "",
              double score = -1, bool deletion_compaction = false,
-             CompactionReason compaction_reason = CompactionReason::kUnknown);
+             bool l0_files_might_overlap = true,
+             CompactionReason compaction_reason = CompactionReason::kUnknown,
+             BlobGarbageCollectionPolicy blob_garbage_collection_policy =
+                 BlobGarbageCollectionPolicy::kUseDefault,
+             double blob_garbage_collection_age_cutoff = -1);
 
   // No copying allowed
   Compaction(const Compaction&) = delete;
@@ -173,6 +177,12 @@ class Compaction {
   // Is this a trivial compaction that can be implemented by just
   // moving a single input file to the next level (no merging or splitting)
   bool IsTrivialMove() const;
+
+  // The split user key in the output level if this compaction is required to
+  // split the output files according to the existing cursor in the output
+  // level under round-robin compaction policy. Empty indicates no required
+  // splitting key
+  const InternalKey* GetOutputSplitKey() const { return output_split_key_; }
 
   // If true, then the compaction can be done by simply deleting input files.
   bool deletion_compaction() const { return deletion_compaction_; }
@@ -306,6 +316,14 @@ class Compaction {
 
   uint32_t max_subcompactions() const { return max_subcompactions_; }
 
+  bool enable_blob_garbage_collection() const {
+    return enable_blob_garbage_collection_;
+  }
+
+  double blob_garbage_collection_age_cutoff() const {
+    return blob_garbage_collection_age_cutoff_;
+  }
+
   // start and end are sub compact range. Null if no boundary.
   // This is used to filter out some input files' ancester's time range.
   uint64_t MinInputFileOldestAncesterTime(const InternalKey* start,
@@ -332,8 +350,9 @@ class Compaction {
 
   // Get the atomic file boundaries for all files in the compaction. Necessary
   // in order to avoid the scenario described in
-  // https://github.com/facebook/rocksdb/pull/4432#discussion_r221072219 and plumb
-  // down appropriate key boundaries to RangeDelAggregator during compaction.
+  // https://github.com/facebook/rocksdb/pull/4432#discussion_r221072219 and
+  // plumb down appropriate key boundaries to RangeDelAggregator during
+  // compaction.
   static std::vector<CompactionInputFiles> PopulateWithAtomicBoundaries(
       VersionStorageInfo* vstorage, std::vector<CompactionInputFiles> inputs);
 
@@ -348,7 +367,7 @@ class Compaction {
 
   VersionStorageInfo* input_vstorage_;
 
-  const int start_level_;    // the lowest level to be compacted
+  const int start_level_;   // the lowest level to be compacted
   const int output_level_;  // levels to which output files are stored
   uint64_t max_output_file_size_;
   uint64_t max_compaction_bytes_;
@@ -359,7 +378,7 @@ class Compaction {
   VersionEdit edit_;
   const int number_levels_;
   ColumnFamilyData* cfd_;
-  Arena arena_;          // Arena used to allocate space for file_levels_
+  Arena arena_;  // Arena used to allocate space for file_levels_
 
   const uint32_t output_path_id_;
   CompressionType output_compression_;
@@ -367,6 +386,13 @@ class Compaction {
   Temperature output_temperature_;
   // If true, then the compaction can be done by simply deleting input files.
   const bool deletion_compaction_;
+  // should it split the output file using the compact cursor?
+  const InternalKey* output_split_key_;
+
+  // L0 files in LSM-tree might be overlapping. But the compaction picking
+  // logic might pick a subset of the files that aren't overlapping. if
+  // that is the case, set the value to false. Otherwise, set it true.
+  bool l0_files_might_overlap_;
 
   // Compaction input files organized by level. Constant after construction
   const std::vector<CompactionInputFiles> inputs_;
@@ -377,7 +403,7 @@ class Compaction {
   // State used to check for number of overlapping grandparent files
   // (grandparent == "output_level_ + 1")
   std::vector<FileMetaData*> grandparents_;
-  const double score_;         // score that was used to pick this compaction.
+  const double score_;  // score that was used to pick this compaction.
 
   // Is this compaction creating a file in the bottom most level?
   const bool bottommost_level_;
@@ -412,6 +438,12 @@ class Compaction {
   // Notify on compaction completion only if listener was notified on compaction
   // begin.
   bool notify_on_compaction_completion_;
+
+  // Enable/disable GC collection for blobs during compaction.
+  bool enable_blob_garbage_collection_;
+
+  // Blob garbage collection age cutoff.
+  double blob_garbage_collection_age_cutoff_;
 };
 
 // Return sum of sizes of all files in `files`.

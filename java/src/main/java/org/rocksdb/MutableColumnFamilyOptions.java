@@ -73,7 +73,8 @@ public class MutableColumnFamilyOptions
     max_successive_merges(ValueType.LONG),
     @Deprecated filter_deletes(ValueType.BOOLEAN),
     max_write_buffer_number(ValueType.INT),
-    inplace_update_num_locks(ValueType.LONG);
+    inplace_update_num_locks(ValueType.LONG),
+    experimental_mempurge_threshold(ValueType.DOUBLE);
 
     private final ValueType valueType;
     MemtableOption(final ValueType valueType) {
@@ -121,7 +122,8 @@ public class MutableColumnFamilyOptions
     enable_blob_garbage_collection(ValueType.BOOLEAN),
     blob_garbage_collection_age_cutoff(ValueType.DOUBLE),
     blob_garbage_collection_force_threshold(ValueType.DOUBLE),
-    blob_compaction_readahead_size(ValueType.LONG);
+    blob_compaction_readahead_size(ValueType.LONG),
+    blob_file_starting_level(ValueType.INT);
 
     private final ValueType valueType;
     BlobOption(final ValueType valueType) {
@@ -284,6 +286,18 @@ public class MutableColumnFamilyOptions
     @Override
     public long inplaceUpdateNumLocks() {
       return getLong(MemtableOption.inplace_update_num_locks);
+    }
+
+    @Override
+    public MutableColumnFamilyOptionsBuilder setExperimentalMempurgeThreshold(
+        final double experimentalMempurgeThreshold) {
+      return setDouble(
+          MemtableOption.experimental_mempurge_threshold, experimentalMempurgeThreshold);
+    }
+
+    @Override
+    public double experimentalMempurgeThreshold() {
+      return getDouble(MemtableOption.experimental_mempurge_threshold);
     }
 
     @Override
@@ -581,6 +595,17 @@ public class MutableColumnFamilyOptions
     @Override
     public long blobCompactionReadaheadSize() {
       return getLong(BlobOption.blob_compaction_readahead_size);
+    }
+
+    @Override
+    public MutableColumnFamilyOptionsBuilder setBlobFileStartingLevel(
+        final int blobFileStartingLevel) {
+      return setInt(BlobOption.blob_file_starting_level, blobFileStartingLevel);
+    }
+
+    @Override
+    public int blobFileStartingLevel() {
+      return getInt(BlobOption.blob_file_starting_level);
     }
   }
 }

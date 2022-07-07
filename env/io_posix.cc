@@ -88,6 +88,19 @@ int Fadvise(int fd, off_t offset, size_t len, int advice) {
 #endif
 }
 
+// A wrapper for fadvise, if the platform doesn't support fadvise,
+// it will simply return 0.
+int Madvise(void* addr, size_t len, int advice) {
+#ifdef OS_LINUX
+  return posix_madvise(addr, len, advice);
+#else
+  (void)addr;
+  (void)len;
+  (void)advice;
+  return 0;  // simply do nothing.
+#endif
+}
+
 namespace {
 
 // On MacOS (and probably *BSD), the posix write and pwrite calls do not support
@@ -185,23 +198,6 @@ bool IsSyncFileRangeSupported(int fd) {
 #endif  // ROCKSDB_RANGESYNC_PRESENT
 
 }  // anonymous namespace
-
-/*
- * DirectIOHelper
- */
-namespace {
-
-bool IsSectorAligned(const size_t off, size_t sector_size) {
-  assert((sector_size & (sector_size - 1)) == 0);
-  return (off & (sector_size - 1)) == 0;
-}
-
-#ifndef NDEBUG
-bool IsSectorAligned(const void* ptr, size_t sector_size) {
-  return uintptr_t(ptr) % sector_size == 0;
-}
-#endif
-}  // namespace
 
 /*
  * PosixSequentialFile
@@ -747,32 +743,21 @@ IOStatus PosixRandomAccessFile::MultiRead(FSReadRequest* reqs,
 
       FSReadRequest* req = req_wrap->req;
       size_t bytes_read = 0;
+      bool read_again = false;
       UpdateResult(cqe, filename_, req->len, req_wrap->iov.iov_len,
-                   false /*async_read*/, req_wrap->finished_len, req,
-                   bytes_read);
+                   false /*async_read*/, use_direct_io(),
+                   GetRequiredBufferAlignment(), req_wrap->finished_len, req,
+                   bytes_read, read_again);
       int32_t res = cqe->res;
       if (res >= 0) {
-        if (bytes_read == 0) {
-          /// cqe->res == 0 can means EOF, or can mean partial results. See
-          // comment
-          // https://github.com/facebook/rocksdb/pull/6441#issuecomment-589843435
-          // Fall back to pread in this case.
-          if (use_direct_io() &&
-              !IsSectorAligned(req_wrap->finished_len,
-                               GetRequiredBufferAlignment())) {
-            // Bytes reads don't fill sectors. Should only happen at the end
-            // of the file.
-            req->result = Slice(req->scratch, req_wrap->finished_len);
-            req->status = IOStatus::OK();
-          } else {
-            Slice tmp_slice;
-            req->status =
-                Read(req->offset + req_wrap->finished_len,
-                     req->len - req_wrap->finished_len, options, &tmp_slice,
-                     req->scratch + req_wrap->finished_len, dbg);
-            req->result =
-                Slice(req->scratch, req_wrap->finished_len + tmp_slice.size());
-          }
+        if (bytes_read == 0 && read_again) {
+          Slice tmp_slice;
+          req->status =
+              Read(req->offset + req_wrap->finished_len,
+                   req->len - req_wrap->finished_len, options, &tmp_slice,
+                   req->scratch + req_wrap->finished_len, dbg);
+          req->result =
+              Slice(req->scratch, req_wrap->finished_len + tmp_slice.size());
         } else if (bytes_read < req_wrap->iov.iov_len) {
           incomplete_rq_list.push_back(req_wrap);
         }
@@ -897,19 +882,15 @@ IOStatus PosixRandomAccessFile::ReadAsync(
     args = nullptr;
   };
 
-  Posix_IOHandle* posix_handle = new Posix_IOHandle();
-  *io_handle = static_cast<void*>(posix_handle);
-  *del_fn = deletefn;
-
   // Initialize Posix_IOHandle.
-  posix_handle->iu = iu;
+  Posix_IOHandle* posix_handle =
+      new Posix_IOHandle(iu, cb, cb_arg, req.offset, req.len, req.scratch,
+                         use_direct_io(), GetRequiredBufferAlignment());
   posix_handle->iov.iov_base = req.scratch;
   posix_handle->iov.iov_len = req.len;
-  posix_handle->cb = cb;
-  posix_handle->cb_arg = cb_arg;
-  posix_handle->offset = req.offset;
-  posix_handle->len = req.len;
-  posix_handle->scratch = req.scratch;
+
+  *io_handle = static_cast<void*>(posix_handle);
+  *del_fn = deletefn;
 
   // Step 3: io_uring_sqe_set_data
   struct io_uring_sqe* sqe;
@@ -980,6 +961,29 @@ IOStatus PosixMmapReadableFile::Read(uint64_t offset, size_t n,
   }
   *result = Slice(reinterpret_cast<char*>(mmapped_region_) + offset, n);
   return s;
+}
+
+void PosixMmapReadableFile::Hint(AccessPattern pattern) {
+  switch (pattern) {
+    case kNormal:
+      Madvise(mmapped_region_, length_, POSIX_MADV_NORMAL);
+      break;
+    case kRandom:
+      Madvise(mmapped_region_, length_, POSIX_MADV_RANDOM);
+      break;
+    case kSequential:
+      Madvise(mmapped_region_, length_, POSIX_MADV_SEQUENTIAL);
+      break;
+    case kWillNeed:
+      Madvise(mmapped_region_, length_, POSIX_MADV_WILLNEED);
+      break;
+    case kWontNeed:
+      Madvise(mmapped_region_, length_, POSIX_MADV_DONTNEED);
+      break;
+    default:
+      assert(false);
+      break;
+  }
 }
 
 IOStatus PosixMmapReadableFile::InvalidateCache(size_t offset, size_t length) {
@@ -1639,7 +1643,8 @@ PosixMemoryMappedFileBuffer::~PosixMemoryMappedFileBuffer() {
 // The magic number for BTRFS is fixed, if it's not defined, define it here
 #define BTRFS_SUPER_MAGIC 0x9123683E
 #endif
-PosixDirectory::PosixDirectory(int fd) : fd_(fd) {
+PosixDirectory::PosixDirectory(int fd, const std::string& directory_name)
+    : fd_(fd), directory_name_(directory_name) {
   is_btrfs_ = false;
 #ifdef OS_LINUX
   struct statfs buf;
@@ -1649,10 +1654,28 @@ PosixDirectory::PosixDirectory(int fd) : fd_(fd) {
 #endif
 }
 
-PosixDirectory::~PosixDirectory() { close(fd_); }
+PosixDirectory::~PosixDirectory() {
+  if (fd_ >= 0) {
+    IOStatus s = PosixDirectory::Close(IOOptions(), nullptr);
+    s.PermitUncheckedError();
+  }
+}
 
 IOStatus PosixDirectory::Fsync(const IOOptions& opts, IODebugContext* dbg) {
   return FsyncWithDirOptions(opts, dbg, DirFsyncOptions());
+}
+
+// Users who want the file entries synced in Directory project must call a
+// Fsync or FsyncWithDirOptions function before Close
+IOStatus PosixDirectory::Close(const IOOptions& /*opts*/,
+                               IODebugContext* /*dbg*/) {
+  IOStatus s = IOStatus::OK();
+  if (close(fd_) < 0) {
+    s = IOError("While closing directory ", directory_name_, errno);
+  } else {
+    fd_ = -1;
+  }
+  return s;
 }
 
 IOStatus PosixDirectory::FsyncWithDirOptions(
@@ -1686,15 +1709,19 @@ IOStatus PosixDirectory::FsyncWithDirOptions(
     }
     // fallback to dir-fsync for kDefault, kDirRenamed and kFileDeleted
   }
+
+  // skip fsync/fcntl when fd_ == -1 since this file descriptor has been closed
+  // in either the de-construction or the close function, data must have been
+  // fsync-ed before de-construction and close is called
 #ifdef HAVE_FULLFSYNC
   // btrfs is a Linux file system, while currently F_FULLFSYNC is available on
   // Mac OS.
   assert(!is_btrfs_);
-  if (::fcntl(fd_, F_FULLFSYNC) < 0) {
+  if (fd_ != -1 && ::fcntl(fd_, F_FULLFSYNC) < 0) {
     return IOError("while fcntl(F_FULLFSYNC)", "a directory", errno);
   }
 #else   // HAVE_FULLFSYNC
-  if (fsync(fd_) == -1) {
+  if (fd_ != -1 && fsync(fd_) == -1) {
     s = IOError("While fsync", "a directory", errno);
   }
 #endif  // HAVE_FULLFSYNC

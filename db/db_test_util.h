@@ -588,6 +588,7 @@ class SpecialEnv : public EnvWrapper {
         ~NoopDirectory() {}
 
         Status Fsync() override { return Status::OK(); }
+        Status Close() override { return Status::OK(); }
       };
 
       result->reset(new NoopDirectory());
@@ -1199,10 +1200,12 @@ class DBTestBase : public testing::Test {
   std::vector<std::string> MultiGet(std::vector<int> cfs,
                                     const std::vector<std::string>& k,
                                     const Snapshot* snapshot,
-                                    const bool batched);
+                                    const bool batched,
+                                    const bool async = false);
 
   std::vector<std::string> MultiGet(const std::vector<std::string>& k,
-                                    const Snapshot* snapshot = nullptr);
+                                    const Snapshot* snapshot = nullptr,
+                                    const bool async = false);
 
   uint64_t GetNumSnapshots();
 
