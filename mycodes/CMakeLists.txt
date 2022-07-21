@@ -1,0 +1,3 @@
+add_executable(samplecode samplecode.cpp)
+target_link_libraries(samplecode rocksdb dl)
+target_compile_features(samplecode PRIVATE cxx_std_17)
