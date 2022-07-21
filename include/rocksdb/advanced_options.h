@@ -559,6 +559,7 @@ struct AdvancedColumnFamilyOptions {
   // Default: 64MB.
   //
   // Dynamically changeable through SetOptions() API
+  //ANCHOR: target_file_size_base
   uint64_t target_file_size_base = 64 * 1048576;
 
   // By default target_file_size_multiplier is 1, which means
