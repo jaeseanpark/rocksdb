@@ -11,7 +11,7 @@ def main():
             for line in f:
                 if "flush table" in line and line.endswith('OK\n'):
                     split = line.split()
-                    L0 += int(split[-3])
+                    L0 += int(split[10])
                     # print(line, end=' ')
                 elif "Compacted" in line:
                     split = line.split()

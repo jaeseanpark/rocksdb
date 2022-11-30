@@ -2059,7 +2059,6 @@ void Version::Get(const ReadOptions& read_options, const LookupKey& k,
         db_statistics_ != nullptr) {
       get_context.ReportCounters();
     }
-    std::ofstream logfile;
     switch (get_context.State()) {
       case GetContext::kNotFound:
         // Keep searching in other files
@@ -2068,7 +2067,6 @@ void Version::Get(const ReadOptions& read_options, const LookupKey& k,
         // TODO: update per-level perfcontext user_key_return_count for kMerge
         break;
       case GetContext::kFound:
-      //ANCHOR: implemented logging file level 
         if (fp.GetHitFileLevel() == 0) {
           RecordTick(db_statistics_, GET_HIT_L0);
         } else if (fp.GetHitFileLevel() == 1) {
@@ -2076,9 +2074,6 @@ void Version::Get(const ReadOptions& read_options, const LookupKey& k,
         } else if (fp.GetHitFileLevel() >= 2) {
           RecordTick(db_statistics_, GET_HIT_L2_AND_UP);
         }
-        logfile.open("getlog.txt", std::ios::app);
-        logfile << "file found at level " << fp.GetHitFileLevel() << std::endl;
-        logfile.close();
 
         PERF_COUNTER_BY_LEVEL_ADD(user_key_return_count, 1,
                                   fp.GetHitFileLevel());
