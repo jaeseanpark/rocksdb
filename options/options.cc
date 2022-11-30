@@ -114,7 +114,12 @@ AdvancedColumnFamilyOptions::AdvancedColumnFamilyOptions(const Options& options)
 ColumnFamilyOptions::ColumnFamilyOptions()
     : compression(Snappy_Supported() ? kSnappyCompression : kNoCompression),
       table_factory(
-          std::shared_ptr<TableFactory>(new BlockBasedTableFactory())) {}
+          std::shared_ptr<TableFactory>(new BlockBasedTableFactory())) {
+          //SECTION - CF paths added
+          cf_paths.push_back(DbPath({"/home/jaepark/ycsbdata", 10011u << 30}));
+          cf_paths.push_back(DbPath({"/home/jaepark/ycsbdata2", 10011u << 30}));
+          //!SECTION
+          }
 
 ColumnFamilyOptions::ColumnFamilyOptions(const Options& options)
     : ColumnFamilyOptions(*static_cast<const ColumnFamilyOptions*>(&options)) {}
