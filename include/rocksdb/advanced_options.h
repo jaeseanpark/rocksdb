@@ -529,7 +529,8 @@ struct AdvancedColumnFamilyOptions {
   std::vector<CompressionType> compression_per_level;
 
   // Number of levels for this database
-  int num_levels = 7;
+  //ANCHOR - num_levels
+  int num_levels = 4;
 
   // Soft limit on number of level-0 files. We start slowing down writes at this
   // point. A value <0 means that no writing slow down will be triggered by
